@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "brokerage-tech-coding-challenge-master"
+version = "0.1.0"
+description = "A project to provide a tool to get any US stock daily close prices in any currency in a date range"
+authors = ["Tony Benoy <me@tonybenoy.com>"]
+license = "GPL"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+SQLAlchemy = "^1.4.40"
+pandas = "^1.4.3"
+
+[tool.poetry.dev-dependencies]
+black = "isort"
+isort = "^5.10.1"
+mypy = "^0.971"
+pre-commit = "^2.20.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
