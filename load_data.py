@@ -1,7 +1,8 @@
 import logging
-from datetime import date, timedelta
+from asyncio.log import logger
+from datetime import date
 from locale import currency
-from typing import Dict
+from typing import Any, Dict, List
 
 import arrow
 import pandas as pd
@@ -18,6 +19,7 @@ from constants import (
 )
 from extensions import session
 from model import Currency, ExchangeRate, MarketData
+from utils import get_business_days, get_currency_list, handle_api_error
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -32,33 +34,32 @@ def main(
         start_date = arrow.get(start_date).date()
     except Exception as e:
         logging.info(f"{start_date} is not a valid date,{e}")
-        return e
     try:
         last_date = arrow.get(last_date).date()
     except Exception as e:
         logging.info(f"{last_date} is not a valid date,{e}")
-        return e
     try:
         symbol = symbol.upper()
     except Exception as e:
         logging.info(f"{symbol} is not a valid symbol,{e}")
-        return e
     try:
         currency = currency.upper()
     except Exception as e:
-        logging.info(f"{currency} is not a valid currency,{e}")
-        return e
-    validate_data(currency=currency, start_date=start_date, last_date=last_date)
+        logging.info(f"{currency} is not a valid string currency,{e}")
+    if not validate_data(currency=currency, start_date=start_date, last_date=last_date):
+        logging.info("Fix the above errors and try again")
     if currency != "USD":
-        persist_exchange_rates(
+        if not get_exchange_rates(
             start_date=start_date, end_date=last_date, currency=currency
-        )
-    persist_market_data(symbol=symbol, start_date=start_date, last_date=last_date)
+        ):
+            logging.info("Exchange rates not available for the given currency")
+    if not get_market_data(symbol=symbol, start_date=start_date, last_date=last_date):
+        logging.info("Market data not available for the given symbol")
     output(currency=currency, start_date=start_date, last_date=last_date, symbol=symbol)
 
 
 def output(currency: str, start_date: date, last_date: date, symbol: str):
-
+    # Output the data in a table
     market_df = pd.read_sql(
         session.query(MarketData)
         .filter(
@@ -116,28 +117,31 @@ def output(currency: str, start_date: date, last_date: date, symbol: str):
 
 
 def validate_dates(start_date: date, last_date: date):
+    # Check if start date is less than last date
+    # Check if start date is less than current date
+    # Check if last date is less than current date
+    # Check if number of days between start date and
+    # last date is less than 365 days
+    valid = True
     if last_date < start_date:
         logging.info(f"{last_date} is before {start_date}")
-        raise Exception
+        valid = False
     today = arrow.utcnow().date()
     if start_date > today:
         logging.info(f"{start_date} is in the future")
-        raise Exception
-    elif last_date > today:
+        valid = False
+    if last_date > today:
         logging.info(f"{last_date} is in the future")
-        raise Exception
-    elif (last_date - start_date).days > 365:
+        valid = False
+    if (last_date - start_date).days > 365:
         logging.info(f"{last_date - start_date} is more than 365 days")
-        raise Exception
-    return True
-
-
-def get_currency_list():
-    # Get list of valid currencies from database and return it
-    return [currency for currency, in session.query(Currency.currency_symbol).all()]
+        valid = False
+    return valid
 
 
 def update_symbols_from_endpoint() -> Dict[str, str]:
+    # Call the api and get the updated
+    # list of currencies to check if new currency
     response = requests.request(
         "GET",
         f"{EXCHANGE_RATE_BASE_URL}symbols",
@@ -146,42 +150,29 @@ def update_symbols_from_endpoint() -> Dict[str, str]:
     )
     if response.status_code == 200:
         return response.json()["symbols"]
-    elif response.status_code == 400:
-        logging.info(f"{response.json()}")
-        raise Exception
-    elif response.status_code == 401:
-        logging.info("Check the API key")
-    elif response.status_code == 404:
-        logging.info("The resource you are looking for is not found, contact developer")
-    elif response.status_code == 429:
-        logging.info(
-            "You have exceeded your daily limit. \
-             Please try again after some time or upgrade plan."
-        )
-    elif response.status_code == 500:
-        logging.info("Something went wrong, contact developer")
     else:
-        logging.info(f"{response.status_code},{response.json()['message']}")
-        raise Exception
+        handle_api_error(response=response)
     return {}
 
 
-def update_currency_list():
+def update_currency_list() -> List[str]:
     # Call the api and get the updated list of currencies to check if new currency
-    #  is availableIf new currency is available, add it to the list
-    #  of valid currencies
+    # is availableIf new currency is available, add it to the list
+    # of valid currencies
     currencies = update_symbols_from_endpoint()
     available_currencies = get_currency_list()
     for symbol, name in currencies.items():
         if currency not in available_currencies:
             new_currency = Currency(currency_symbol=symbol, name=name)
             session.add(new_currency)
-            session.commit()
+    session.commit()
     return get_currency_list()
 
 
-def validate_currency(currency: str):
+def validate_currency(currency: str) -> bool:
     # Check if currency is in the list of valid currencies
+    # If not, call the currency list api and update the list
+    # of valid currencies
     if currency not in get_currency_list():
         currencies = update_currency_list()
         if currency not in currencies:
@@ -190,7 +181,8 @@ def validate_currency(currency: str):
     return True
 
 
-def validate_data(currency: str, start_date: date, last_date: date):
+def validate_data(currency: str, start_date: date, last_date: date) -> bool:
+    # Validate the data to check for issues
     if validate_dates(start_date=start_date, last_date=last_date):
         logging.info("Valid dates have been passed and accepted")
     else:
@@ -202,13 +194,14 @@ def validate_data(currency: str, start_date: date, last_date: date):
     return True
 
 
-def update_exchange_rates(start_date: date, end_date: date):
-
+def update_exchange_rates(start_date: date, end_date: date) -> Dict[str, Any]:
+    # Get the exchange rates for the given currency and date range
     querystring = {
         "start_date": start_date.strftime("%Y-%m-%d"),
         "end_date": end_date.strftime("%Y-%m-%d"),
         "base": "USD",
     }
+    logger.info("Updating exchange rates")
     response = requests.request(
         "GET",
         f"{EXCHANGE_RATE_BASE_URL}timeseries",
@@ -218,27 +211,13 @@ def update_exchange_rates(start_date: date, end_date: date):
     )
     if response.status_code == 200:
         return response.json()["rates"]
-    elif response.status_code == 400:
-        logging.info(f"{response.json()}")
-        raise Exception
-    elif response.status_code == 401:
-        logging.info("Check the API key")
-    elif response.status_code == 404:
-        logging.info("The resource you are looking for is not found, contact developer")
-    elif response.status_code == 429:
-        logging.info(
-            "You have exceeded your daily limit.\
-             Please try again after some time or upgrade plan."
-        )
-    elif response.status_code == 500:
-        logging.info("Something went wrong, contact developer")
     else:
-        logging.info(f"{response.status_code},{response.json()['message']}")
-        raise Exception
+        handle_api_error(response=response)
     return {}
 
 
-def persist_exchange_rates(start_date: date, end_date: date, currency: str):
+def get_exchange_rates(start_date: date, end_date: date, currency: str):
+    # Get the exchange rates for the given currency and date range
     qry = (
         session.query(ExchangeRate)
         .filter(
@@ -268,20 +247,12 @@ def persist_exchange_rates(start_date: date, end_date: date, currency: str):
                     rate=rate,
                 )
                 session.add(new_exchange_rate)
-                session.commit()
+    session.commit()
     return True
 
 
-def get_business_days(start_date, end_date):
-    return sum(
-        [
-            (start_date + timedelta(days=i)).weekday() not in (5, 6)
-            for i in range((end_date - start_date).days + 1)
-        ]
-    )
-
-
-def persist_market_data(symbol: str, start_date: date, last_date: date):
+def get_market_data(symbol: str, start_date: date, last_date: date) -> bool:
+    # Get the market data for the given symbol and date range
     qry = (
         session.query(MarketData).filter(
             MarketData.date.between(start_date, last_date),
@@ -317,7 +288,6 @@ def persist_market_data(symbol: str, start_date: date, last_date: date):
                         close_price_cent=int((data["close"] % 1) * 100),
                     )
                     session.add(new_market_data)
-                    session.commit()
             offset = resp_json["pagination"]["offset"]
             limit = resp_json["pagination"]["limit"]
             total = resp_json["pagination"]["total"]
@@ -326,26 +296,10 @@ def persist_market_data(symbol: str, start_date: date, last_date: date):
                 querystring.update({"offset": offset + limit})
             else:
                 break
-        elif response.status_code == 401:
-            logging.info("Check the API key")
+        else:
+            handle_api_error(response=response)
             return False
-        elif response.status_code == 404:
-            logging.info(
-                "The resource you are looking for is not found, contact developer"
-            )
-            return False
-        elif response.status_code == 429:
-            logging.info(
-                "You have exceeded your daily limit.\
-                 Please try again after some time or upgrade plan."
-            )
-            return False
-        elif response.status_code == 500:
-            logging.info(
-                "Something went wrong,\
-             contact developer"
-            )
-            return False
+    session.commit()
     return True
 
 
