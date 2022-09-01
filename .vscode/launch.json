@@ -11,7 +11,7 @@
             "program": "${file}",
             "args": [
                 "--symbol",
-                "GOOGL",
+                "GOOL",
                 "--currency",
                 "eur",
                 "--start-date",
